@@ -1,0 +1,75 @@
+-- =====================================================
+-- SISTEMA DE PARQUEADERO "AUTOS COLOMBIA"
+-- Modelo Físico — Base de datos completa
+-- =====================================================
+
+-- 1. Crear base de datos
+CREATE DATABASE IF NOT EXISTS parqueadero_autoscolombia;
+USE parqueadero_autoscolombia;
+
+-- 2. Tabla: Usuario
+CREATE TABLE Usuario (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    nombre VARCHAR(100) NOT NULL,
+    correo VARCHAR(100) NOT NULL UNIQUE,
+    contraseña VARCHAR(255) NOT NULL,
+    rol ENUM('administrador', 'operario') NOT NULL,
+    estado BOOLEAN DEFAULT TRUE
+);
+
+-- 3. Tabla: Vehiculo
+CREATE TABLE Vehiculo (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    placa VARCHAR(6) NOT NULL UNIQUE,
+    marca VARCHAR(50),
+    modelo VARCHAR(50),
+    color VARCHAR(30),
+    id_usuario INT,
+    FOREIGN KEY (id_usuario) REFERENCES Usuario(id) ON DELETE SET NULL
+);
+
+-- 4. Tabla: Celda
+CREATE TABLE Celda (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    codigo VARCHAR(10) NOT NULL UNIQUE,
+    estado ENUM('disponible', 'ocupada', 'mantenimiento') DEFAULT 'disponible',
+    tipo ENUM('carro', 'moto', 'discapacitados') DEFAULT 'carro'
+);
+
+-- 5. Tabla: Movimiento
+CREATE TABLE Movimiento (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    id_vehiculo INT NOT NULL,
+    id_celda INT NOT NULL,
+    fecha_entrada DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    fecha_salida DATETIME NULL,
+    id_op_entrada INT NOT NULL,
+    id_op_salida INT NULL,
+    FOREIGN KEY (id_vehiculo) REFERENCES Vehiculo(id),
+    FOREIGN KEY (id_celda) REFERENCES Celda(id),
+    FOREIGN KEY (id_op_entrada) REFERENCES Usuario(id),
+    FOREIGN KEY (id_op_salida) REFERENCES Usuario(id)
+);
+
+-- 6. Tabla: Pago
+CREATE TABLE Pago (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    id_vehiculo INT NOT NULL,
+    periodo VARCHAR(7) NOT NULL,
+    valor DECIMAL(10,2) NOT NULL,
+    fecha_pago DATETIME DEFAULT CURRENT_TIMESTAMP,
+    estado ENUM('pendiente', 'pagado', 'vencido') DEFAULT 'pendiente',
+    FOREIGN KEY (id_vehiculo) REFERENCES Vehiculo(id),
+    UNIQUE KEY uk_vehiculo_periodo (id_vehiculo, periodo)
+);
+
+-- 7. Datos de prueba iniciales
+INSERT INTO Usuario (nombre, correo, contraseña, rol, estado) 
+VALUES ('Administrador', 'admin@autoscolombia.com', 'Admin123', 'administrador', TRUE);
+
+INSERT INTO Celda (codigo, estado, tipo) VALUES
+('A01', 'disponible', 'carro'),
+('A02', 'disponible', 'carro'),
+('A03', 'disponible', 'carro'),
+('B01', 'disponible', 'moto'),
+('C01', 'disponible', 'discapacitados');
