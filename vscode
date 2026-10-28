@@ -1,0 +1,14 @@
+{
+    "configurations": [
+        {
+            "type": "java",
+            "name": "Spring Boot-AutosColombiaApplication<autos-colombia>",
+            "request": "launch",
+            "cwd": "${workspaceFolder}",
+            "mainClass": "co.autoscolombia.AutosColombiaApplication",
+            "projectName": "autos-colombia",
+            "args": "",
+            "envFile": "${workspaceFolder}/.env"
+        }
+    ]
+}
