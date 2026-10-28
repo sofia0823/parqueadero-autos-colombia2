@@ -1,0 +1,1347 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>co.autoscolombia</groupId><artifactId>autos-colombia</artifactId><version>1.0.0</version>
+  <parent><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-parent</artifactId><version>3.4.5</version><relativePath/></parent>
+  <properties><java.version>21</java.version></properties>
+  <dependencies>
+
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-actuator</artifactId>
+    </dependency>
+
+    <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-web</artifactId></dependency>
+    <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-data-jpa</artifactId></dependency>
+    <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-validation</artifactId></dependency>
+    <dependency><groupId>com.mysql</groupId><artifactId>mysql-connector-j</artifactId><scope>runtime</scope></dependency>
+    <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-test</artifactId><scope>test</scope></dependency>
+  </dependencies>
+  <build><plugins><plugin><groupId>org.springframework.boot</groupId><artifactId>spring-boot-maven-plugin</artifactId></plugin></plugins></build>
+</project>
+
+
+package co.autoscolombia.application;
+
+import co.autoscolombia.domain.model.Celda;
+import co.autoscolombia.domain.port.CeldaRepository;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.ArrayList;
+import java.util.List;
+
+@Service
+public class CeldaService {
+
+    private final CeldaRepository celdaRepository;
+
+    public CeldaService(CeldaRepository celdaRepository) {
+        this.celdaRepository = celdaRepository;
+    }
+
+    @Transactional(readOnly = true)
+    public List<Celda> listar() {
+        return celdaRepository.listar();
+    }
+
+    @Transactional(readOnly = true)
+    public List<Celda> listarDisponibles() {
+        return celdaRepository.listarDisponibles();
+    }
+
+    @Transactional
+    public Celda registrar(String codigo, String tipo) {
+        if (codigo == null || codigo.isBlank()) {
+            throw new IllegalArgumentException(
+                "El código de la celda es obligatorio."
+            );
+        }
+
+        if (tipo == null || tipo.isBlank()) {
+            throw new IllegalArgumentException(
+                "El tipo de la celda es obligatorio."
+            );
+        }
+
+        String codigoNormalizado = codigo.trim().toUpperCase();
+        String tipoNormalizado = tipo.trim().toUpperCase();
+
+        if (celdaRepository.existeCodigo(codigoNormalizado)) {
+            throw new IllegalArgumentException(
+                "Ya existe una celda con el código " + codigoNormalizado
+            );
+        }
+
+        Celda celda = new Celda(codigoNormalizado, tipoNormalizado);
+        celda.setEstado(Celda.Estado.DISPONIBLE);
+
+        return celdaRepository.guardar(celda);
+    }
+
+    @Transactional
+    public List<Celda> crearVeinte() {
+        List<Celda> creadas = new ArrayList<>();
+
+        for (int i = 1; i <= 20; i++) {
+            String codigo = String.format("C%02d", i);
+
+            if (!celdaRepository.existeCodigo(codigo)) {
+                Celda celda = new Celda(codigo, "CARRO");
+                celda.setEstado(Celda.Estado.DISPONIBLE);
+
+                creadas.add(celdaRepository.guardar(celda));
+            }
+        }
+
+        return creadas;
+    }
+}
+
+package co.autoscolombia.application.dto;
+
+public record ConfirmarPagoRequest(
+    String metodo
+) {}
+package co.autoscolombia.application.dto;
+
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+
+public record LiquidacionEstancia(
+    Long estanciaId,
+    String placa,
+    LocalDateTime entrada,
+    LocalDateTime fechaCalculo,
+    long minutosEstancia,
+    long horasFacturadas,
+    BigDecimal tarifaPorHora,
+    BigDecimal total
+) {}
+
+package co.autoscolombia.application;
+
+import co.autoscolombia.application.dto.ConfirmarPagoRequest;
+import co.autoscolombia.application.dto.LiquidacionEstancia;
+import co.autoscolombia.domain.model.Celda;
+import co.autoscolombia.domain.model.Estancia;
+import co.autoscolombia.domain.model.Pago;
+import co.autoscolombia.domain.model.Vehiculo;
+import co.autoscolombia.domain.port.CeldaRepository;
+import co.autoscolombia.domain.port.EstanciaRepository;
+import co.autoscolombia.domain.port.PagoRepository;
+import co.autoscolombia.domain.port.VehiculoRepository;
+
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.math.BigDecimal;
+import java.time.Duration;
+import java.time.LocalDateTime;
+import java.util.List;
+import java.util.Locale;
+
+@Service
+public class EstanciaService {
+
+    private static final BigDecimal TARIFA_POR_HORA =
+            new BigDecimal("2000.00");
+
+    private final EstanciaRepository estancias;
+    private final VehiculoRepository vehiculos;
+    private final CeldaRepository celdas;
+    private final PagoRepository pagos;
+
+    public EstanciaService(
+            EstanciaRepository estancias,
+            VehiculoRepository vehiculos,
+            CeldaRepository celdas,
+            PagoRepository pagos) {
+
+        this.estancias = estancias;
+        this.vehiculos = vehiculos;
+        this.celdas = celdas;
+        this.pagos = pagos;
+    }
+
+    /**
+     * Lista todas las estancias registradas.
+     */
+    @Transactional(readOnly = true)
+    public List<Estancia> listar() {
+        return estancias.listar();
+    }
+
+    /**
+     * Lista las estancias activas.
+     */
+    @Transactional(readOnly = true)
+    public List<Estancia> listarActivas() {
+        return estancias.listarActivas();
+    }
+
+    /**
+     * Obtiene las celdas disponibles.
+     */
+    @Transactional(readOnly = true)
+    public List<Celda> listarCeldasDisponibles() {
+        return celdas.listarDisponibles();
+    }
+
+    /**
+     * Registra la entrada de un vehículo al parqueadero.
+     */
+    @Transactional
+    public Estancia registrarEntrada(
+            Long vehiculoId,
+            Long celdaId,
+            Long registradoPor) {
+
+        if (vehiculoId == null || celdaId == null) {
+            throw new IllegalArgumentException(
+                    "Debes seleccionar un vehículo y una celda."
+            );
+        }
+
+        Vehiculo vehiculo = vehiculos.buscarPorId(vehiculoId)
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "El vehículo no existe."
+                ));
+
+        if (estancias.existeActivaPorVehiculo(vehiculoId)) {
+            throw new IllegalArgumentException(
+                    "Este vehículo ya tiene una entrada registrada sin salida."
+            );
+        }
+
+        Celda celda = celdas.buscarPorId(celdaId)
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "La celda no existe."
+                ));
+
+        if (celda.getEstado() != Celda.Estado.DISPONIBLE) {
+            throw new IllegalArgumentException(
+                    "La celda seleccionada no está disponible."
+            );
+        }
+
+        Estancia estancia = new Estancia(
+                vehiculo,
+                celda,
+                registradoPor
+        );
+
+        celda.setEstado(Celda.Estado.OCUPADA);
+        celdas.guardar(celda);
+
+        return estancias.guardar(estancia);
+    }
+
+    /**
+     * Calcula el valor de una estancia activa.
+     *
+     * Tarifa: $2.000 COP por hora iniciada.
+     * Se cobra como mínimo una hora.
+     */
+    @Transactional(readOnly = true)
+    public LiquidacionEstancia calcularLiquidacion(
+            Long estanciaId) {
+
+        Estancia estancia = buscarEstanciaActiva(estanciaId);
+
+        LocalDateTime ahora = LocalDateTime.now();
+
+        long segundos = Math.max(
+                0L,
+                Duration.between(
+                        estancia.getEntrada(),
+                        ahora
+                ).getSeconds()
+        );
+
+        long minutos = (segundos + 59L) / 60L;
+
+        long horasFacturadas = Math.max(
+                1L,
+                (segundos + 3599L) / 3600L
+        );
+
+        BigDecimal total = TARIFA_POR_HORA.multiply(
+                BigDecimal.valueOf(horasFacturadas)
+        );
+
+        return new LiquidacionEstancia(
+                estancia.getId(),
+                estancia.getVehiculo().getPlaca(),
+                estancia.getEntrada(),
+                ahora,
+                minutos,
+                horasFacturadas,
+                TARIFA_POR_HORA,
+                total
+        );
+    }
+
+    /**
+     * Registra el pago y la salida en una transacción.
+     */
+    @Transactional
+    public Pago confirmarPagoYRegistrarSalida(
+            Long estanciaId,
+            ConfirmarPagoRequest solicitud) {
+
+        if (solicitud == null
+                || solicitud.metodo() == null
+                || solicitud.metodo().isBlank()) {
+
+            throw new IllegalArgumentException(
+                    "Debes seleccionar un método de pago."
+            );
+        }
+
+        String metodo = solicitud.metodo()
+                .trim()
+                .toUpperCase(Locale.ROOT);
+
+        List<String> metodosPermitidos = List.of(
+                "EFECTIVO",
+                "TARJETA",
+                "TRANSFERENCIA"
+        );
+
+        if (!metodosPermitidos.contains(metodo)) {
+            throw new IllegalArgumentException(
+                    "Método de pago no válido."
+            );
+        }
+
+        Estancia estancia = buscarEstanciaActiva(estanciaId);
+
+        if (pagos.existePorEstancia(estanciaId)) {
+            throw new IllegalArgumentException(
+                    "Esta estancia ya tiene un pago registrado."
+            );
+        }
+
+        /*
+         * El importe se calcula en el backend.
+         * No se acepta un total enviado por el frontend.
+         */
+        LiquidacionEstancia liquidacion =
+                calcularLiquidacion(estanciaId);
+
+        Pago pago = new Pago(
+                estancia,
+                liquidacion.total(),
+                metodo
+        );
+
+        Pago pagoGuardado = pagos.guardar(pago);
+
+        Celda celda = estancia.getCelda();
+
+        estancia.setSalida(LocalDateTime.now());
+        celda.setEstado(Celda.Estado.DISPONIBLE);
+
+        celdas.guardar(celda);
+        estancias.guardar(estancia);
+
+        return pagoGuardado;
+    }
+
+    /**
+     * Busca una estancia activa por su identificador.
+     */
+    private Estancia buscarEstanciaActiva(Long estanciaId) {
+
+        if (estanciaId == null) {
+            throw new IllegalArgumentException(
+                    "El identificador de la estancia es obligatorio."
+            );
+        }
+
+        Estancia estancia = estancias.buscarPorId(estanciaId)
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "No se encontró la estancia."
+                ));
+
+        if (estancia.getSalida() != null) {
+            throw new IllegalArgumentException(
+                    "La salida de este vehículo ya fue registrada."
+            );
+        }
+
+        return estancia;
+    }
+
+    /**
+     * Conserva el endpoint antiguo, pero bloquea las salidas
+     * que no pasen por el proceso de pago.
+     */
+    @Transactional
+    public Estancia registrarSalida(Long estanciaId) {
+
+        throw new IllegalArgumentException(
+                "Para registrar la salida debes confirmar primero el pago."
+        );
+    }
+}
+
+package co.autoscolombia.application;
+
+import co.autoscolombia.domain.model.Vehiculo;
+import co.autoscolombia.domain.port.VehiculoRepository;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import java.util.List;
+
+@Service
+public class VehiculoService {
+    private final VehiculoRepository repository;
+    public VehiculoService(VehiculoRepository repository) { this.repository = repository; }
+
+    @Transactional(readOnly = true)
+    public List<Vehiculo> listar() { return repository.listar(); }
+
+    @Transactional
+    public Vehiculo registrar(Vehiculo vehiculo) {
+        if (vehiculo.getPlaca() == null || vehiculo.getPlaca().isBlank())
+            throw new IllegalArgumentException("La placa es obligatoria.");
+        vehiculo.setPlaca(vehiculo.getPlaca().trim().toUpperCase());
+        if (repository.existePlaca(vehiculo.getPlaca()))
+            throw new IllegalArgumentException("Ya existe un vehículo registrado con esa placa.");
+        if (vehiculo.getPropietario() == null || vehiculo.getPropietario().isBlank())
+            throw new IllegalArgumentException("El nombre del propietario es obligatorio.");
+        return repository.guardar(vehiculo);
+    }
+}
+
+package co.autoscolombia;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class AutosColombiaApplication {
+    public static void main(String[] args) {
+        SpringApplication.run(AutosColombiaApplication.class, args);
+    }
+}
+
+
+package co.autoscolombia.domain.model;
+
+import jakarta.persistence.*;
+
+@Entity
+@Table(name = "celdas")
+public class Celda {
+
+    public enum Estado {
+        DISPONIBLE,
+        OCUPADA,
+        MANTENIMIENTO
+    }
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @Column(nullable = false, unique = true, length = 15)
+    private String codigo;
+
+    @Column(nullable = false, length = 30)
+    private String tipo;
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 30)
+    private Estado estado = Estado.DISPONIBLE;
+
+    public Celda() {
+    }
+
+    public Celda(String codigo, String tipo) {
+        this.codigo = codigo;
+        this.tipo = tipo;
+        this.estado = Estado.DISPONIBLE;
+    }
+
+    public Long getId() {
+        return id;
+    }
+
+    public String getCodigo() {
+        return codigo;
+    }
+
+    public String getTipo() {
+        return tipo;
+    }
+
+    public Estado getEstado() {
+        return estado;
+    }
+
+    public void setCodigo(String codigo) {
+        this.codigo = codigo;
+    }
+
+    public void setTipo(String tipo) {
+        this.tipo = tipo;
+    }
+
+    public void setEstado(Estado estado) {
+        this.estado = estado;
+    }
+}
+
+
+package co.autoscolombia.domain.model;
+
+import jakarta.persistence.*;
+import java.time.LocalDateTime;
+
+@Entity
+@Table(name = "estancias")
+public class Estancia {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @ManyToOne(fetch = FetchType.EAGER, optional = false)
+    @JoinColumn(name = "vehiculo_id", nullable = false)
+    private Vehiculo vehiculo;
+
+    @ManyToOne(fetch = FetchType.EAGER, optional = false)
+    @JoinColumn(name = "celda_id", nullable = false)
+    private Celda celda;
+
+    @Column(nullable = false)
+    private LocalDateTime entrada;
+
+    private LocalDateTime salida;
+
+    @Column(name = "registrado_por")
+    private Long registradoPor;
+
+    public Estancia() {}
+
+    public Estancia(
+            Vehiculo vehiculo,
+            Celda celda,
+            Long registradoPor) {
+        this.vehiculo = vehiculo;
+        this.celda = celda;
+        this.registradoPor = registradoPor;
+        this.entrada = LocalDateTime.now();
+        this.salida = null;
+    }
+
+    public Long getId() {
+        return id;
+    }
+
+    public Vehiculo getVehiculo() {
+        return vehiculo;
+    }
+
+    public Celda getCelda() {
+        return celda;
+    }
+
+    public LocalDateTime getEntrada() {
+        return entrada;
+    }
+
+    public LocalDateTime getSalida() {
+        return salida;
+    }
+
+    public Long getRegistradoPor() {
+        return registradoPor;
+    }
+
+    public void setSalida(LocalDateTime salida) {
+        this.salida = salida;
+    }
+}
+
+package co.autoscolombia.domain.model;
+
+import jakarta.persistence.*;
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+
+@Entity
+@Table(
+    name = "pagos",
+    uniqueConstraints = {
+        @UniqueConstraint(
+            name = "uq_pago_estancia",
+            columnNames = "estancia_id"
+        )
+    }
+)
+public class Pago {
+
+    public enum Estado {
+        PENDIENTE,
+        PAGADO,
+        ANULADO
+    }
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @OneToOne(fetch = FetchType.LAZY, optional = false)
+    @JoinColumn(name = "estancia_id", nullable = false, unique = true)
+    private Estancia estancia;
+
+    @Column(nullable = false, precision = 12, scale = 2)
+    private BigDecimal valor;
+
+    @Column(name = "fecha_pago", nullable = false)
+    private LocalDateTime fechaPago;
+
+    @Column(nullable = false, length = 30)
+    private String metodo;
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 10)
+    private Estado estado;
+
+    @Column(length = 80)
+    private String referencia;
+
+    public Pago() {
+    }
+
+    public Pago(Estancia estancia, BigDecimal valor, String metodo) {
+        this.estancia = estancia;
+        this.valor = valor;
+        this.metodo = metodo;
+        this.fechaPago = LocalDateTime.now();
+        this.estado = Estado.PAGADO;
+    }
+
+    public Long getId() {
+        return id;
+    }
+
+    public Estancia getEstancia() {
+        return estancia;
+    }
+
+    public BigDecimal getValor() {
+        return valor;
+    }
+
+    public LocalDateTime getFechaPago() {
+        return fechaPago;
+    }
+
+    public String getMetodo() {
+        return metodo;
+    }
+
+    public Estado getEstado() {
+        return estado;
+    }
+
+    public String getReferencia() {
+        return referencia;
+    }
+}
+package co.autoscolombia.domain.model;
+
+import jakarta.persistence.*;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Size;
+import java.time.LocalDateTime;
+
+@Entity
+@Table(name = "vehiculos", uniqueConstraints = @UniqueConstraint(name = "uk_vehiculo_placa", columnNames = "placa"))
+public class Vehiculo {
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @NotBlank @Size(max = 10)
+    @Column(nullable = false, unique = true, length = 10)
+    private String placa;
+
+    @NotBlank @Size(max = 60)
+    @Column(nullable = false, length = 60)
+    private String propietario;
+
+    @Size(max = 30)
+    private String telefono;
+
+    @Size(max = 40)
+    private String tipo;
+
+    @Column(nullable = false)
+    private LocalDateTime creadoEn = LocalDateTime.now();
+
+    public Vehiculo() {}
+    public Vehiculo(String placa, String propietario, String telefono, String tipo) {
+        this.placa = placa == null ? null : placa.trim().toUpperCase();
+        this.propietario = propietario == null ? null : propietario.trim();
+        this.telefono = telefono;
+        this.tipo = tipo;
+        this.creadoEn = LocalDateTime.now();
+    }
+    public Long getId() { return id; }
+    public String getPlaca() { return placa; }
+    public void setPlaca(String placa) { this.placa = placa == null ? null : placa.trim().toUpperCase(); }
+    public String getPropietario() { return propietario; }
+    public void setPropietario(String propietario) { this.propietario = propietario; }
+    public String getTelefono() { return telefono; }
+    public void setTelefono(String telefono) { this.telefono = telefono; }
+    public String getTipo() { return tipo; }
+    public void setTipo(String tipo) { this.tipo = tipo; }
+    public LocalDateTime getCreadoEn() { return creadoEn; }
+}
+
+
+package co.autoscolombia.domain.port;
+
+import co.autoscolombia.domain.model.Celda;
+import java.util.List;
+import java.util.Optional;
+
+public interface CeldaRepository {
+
+    List<Celda> listar();
+
+    Optional<Celda> buscarPorId(Long id);
+
+    List<Celda> listarDisponibles();
+
+    boolean existeCodigo(String codigo);
+
+    Celda guardar(Celda celda);
+}
+
+
+package co.autoscolombia.domain.port;
+
+import co.autoscolombia.domain.model.Estancia;
+import java.util.List;
+import java.util.Optional;
+
+public interface EstanciaRepository {
+    List<Estancia> listar();
+    List<Estancia> listarActivas();
+    Optional<Estancia> buscarPorId(Long id);
+    boolean existeActivaPorVehiculo(Long vehiculoId);
+    Estancia guardar(Estancia estancia);
+}
+
+package co.autoscolombia.domain.port;
+
+import co.autoscolombia.domain.model.Pago;
+import java.util.Optional;
+
+public interface PagoRepository {
+
+    boolean existePorEstancia(Long estanciaId);
+
+    Optional<Pago> buscarPorEstancia(Long estanciaId);
+
+    Pago guardar(Pago pago);
+}
+package co.autoscolombia.domain.port;
+
+import co.autoscolombia.domain.model.Vehiculo;
+import java.util.List;
+import java.util.Optional;
+
+public interface VehiculoRepository {
+    List<Vehiculo> listar();
+    Optional<Vehiculo> buscarPorId(Long id);
+    boolean existePlaca(String placa);
+    Vehiculo guardar(Vehiculo vehiculo);
+}
+
+
+package co.autoscolombia.infrastructure.persistence;
+
+import co.autoscolombia.domain.model.Celda;
+import co.autoscolombia.domain.port.CeldaRepository;
+import org.springframework.stereotype.Repository;
+
+import java.util.List;
+import java.util.Optional;
+
+@Repository
+public class JpaCeldaRepository implements CeldaRepository {
+
+    private final SpringDataCelda jpa;
+
+    public JpaCeldaRepository(SpringDataCelda jpa) {
+        this.jpa = jpa;
+    }
+
+    @Override
+    public List<Celda> listar() {
+        return jpa.findAll();
+    }
+
+    @Override
+    public Optional<Celda> buscarPorId(Long id) {
+        return jpa.findById(id);
+    }
+
+    @Override
+    public List<Celda> listarDisponibles() {
+        return jpa.findByEstado(Celda.Estado.DISPONIBLE);
+    }
+
+    @Override
+    public boolean existeCodigo(String codigo) {
+        return jpa.existsByCodigoIgnoreCase(codigo);
+    }
+
+    @Override
+    public Celda guardar(Celda celda) {
+        return jpa.save(celda);
+    }
+}
+
+
+package co.autoscolombia.infrastructure.persistence;
+
+import co.autoscolombia.domain.model.Estancia;
+import co.autoscolombia.domain.port.EstanciaRepository;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.stereotype.Component;
+import java.util.List;
+import java.util.Optional;
+
+interface SpringDataEstancia extends JpaRepository<Estancia, Long> {
+
+    List<Estancia> findAllByOrderByEntradaDesc();
+
+    List<Estancia> findBySalidaIsNullOrderByEntradaDesc();
+
+    boolean existsByVehiculo_IdAndSalidaIsNull(Long vehiculoId);
+}
+
+@Component
+public class JpaEstanciaRepository implements EstanciaRepository {
+
+    private final SpringDataEstancia jpa;
+
+    public JpaEstanciaRepository(SpringDataEstancia jpa) {
+        this.jpa = jpa;
+    }
+
+    @Override
+    public List<Estancia> listar() {
+        return jpa.findAllByOrderByEntradaDesc();
+    }
+
+    @Override
+    public List<Estancia> listarActivas() {
+        return jpa.findBySalidaIsNullOrderByEntradaDesc();
+    }
+
+    @Override
+    public Optional<Estancia> buscarPorId(Long id) {
+        return jpa.findById(id);
+    }
+
+    @Override
+    public boolean existeActivaPorVehiculo(Long vehiculoId) {
+        return jpa.existsByVehiculo_IdAndSalidaIsNull(vehiculoId);
+    }
+
+    @Override
+    public Estancia guardar(Estancia estancia) {
+        return jpa.save(estancia);
+    }
+}
+
+package co.autoscolombia.infrastructure.persistence;
+
+import co.autoscolombia.domain.model.Pago;
+import co.autoscolombia.domain.port.PagoRepository;
+import org.springframework.stereotype.Component;
+
+import java.util.Optional;
+
+@Component
+public class JpaPagoRepository implements PagoRepository {
+
+    private final SpringDataPago jpa;
+
+    public JpaPagoRepository(SpringDataPago jpa) {
+        this.jpa = jpa;
+    }
+
+    @Override
+    public boolean existePorEstancia(Long estanciaId) {
+        return jpa.existsByEstancia_Id(estanciaId);
+    }
+
+    @Override
+    public Optional<Pago> buscarPorEstancia(Long estanciaId) {
+        return jpa.findByEstancia_Id(estanciaId);
+    }
+
+    @Override
+    public Pago guardar(Pago pago) {
+        return jpa.save(pago);
+    }
+}
+package co.autoscolombia.infrastructure.persistence;
+
+import co.autoscolombia.domain.model.Vehiculo;
+import co.autoscolombia.domain.port.VehiculoRepository;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.stereotype.Component;
+import java.util.List;
+import java.util.Optional;
+
+interface SpringDataVehiculo extends JpaRepository<Vehiculo, Long> {
+    boolean existsByPlacaIgnoreCase(String placa);
+}
+
+@Component
+public class JpaVehiculoRepository implements VehiculoRepository {
+    private final SpringDataVehiculo jpa;
+    public JpaVehiculoRepository(SpringDataVehiculo jpa) { this.jpa = jpa; }
+    @Override public List<Vehiculo> listar() { return jpa.findAll(); }
+    @Override public Optional<Vehiculo> buscarPorId(Long id) { return jpa.findById(id); }
+    @Override public boolean existePlaca(String placa) { return jpa.existsByPlacaIgnoreCase(placa); }
+    @Override public Vehiculo guardar(Vehiculo vehiculo) { return jpa.save(vehiculo); }
+}
+
+
+package co.autoscolombia.infrastructure.persistence;
+
+import co.autoscolombia.domain.model.Celda;
+import org.springframework.data.jpa.repository.JpaRepository;
+
+import java.util.List;
+
+public interface SpringDataCelda extends JpaRepository<Celda, Long> {
+
+    List<Celda> findByEstado(Celda.Estado estado);
+
+    boolean existsByCodigoIgnoreCase(String codigo);
+}
+
+package co.autoscolombia.infrastructure.persistence;
+
+import co.autoscolombia.domain.model.Pago;
+import org.springframework.data.jpa.repository.JpaRepository;
+
+import java.util.Optional;
+
+interface SpringDataPago extends JpaRepository<Pago, Long> {
+
+    boolean existsByEstancia_Id(Long estanciaId);
+
+    Optional<Pago> findByEstancia_Id(Long estanciaId);
+}
+
+package co.autoscolombia.infrastructure.web;
+
+import co.autoscolombia.application.CeldaService;
+import co.autoscolombia.domain.model.Celda;
+
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+@RestController
+@RequestMapping("/api/celdas")
+@CrossOrigin(origins = "http://localhost:5173")
+public class CeldaController {
+
+    private final CeldaService celdaService;
+
+    public CeldaController(CeldaService celdaService) {
+        this.celdaService = celdaService;
+    }
+
+    // Consultar todas las celdas
+    @GetMapping
+    public ResponseEntity<List<Celda>> listar() {
+        return ResponseEntity.ok(celdaService.listar());
+    }
+
+    // Consultar celdas disponibles
+    @GetMapping("/disponibles")
+    public ResponseEntity<List<Celda>> listarDisponibles() {
+        return ResponseEntity.ok(celdaService.listarDisponibles());
+    }
+
+    // Registrar una celda
+    @PostMapping
+    public ResponseEntity<?> registrar(
+            @RequestBody CeldaRequest request) {
+
+        if (request == null
+                || request.getCodigo() == null
+                || request.getTipo() == null) {
+
+            Map<String, String> error = new HashMap<>();
+            error.put(
+                "mensaje",
+                "El código y el tipo son obligatorios."
+            );
+
+            return ResponseEntity.badRequest().body(error);
+        }
+
+        Celda celda = celdaService.registrar(
+            request.getCodigo(),
+            request.getTipo()
+        );
+
+        return ResponseEntity.status(HttpStatus.CREATED).body(celda);
+    }
+
+    // Inicializar las 20 celdas si todavía no existen
+    @PostMapping("/inicializar")
+    public ResponseEntity<List<Celda>> crearVeinte() {
+        List<Celda> creadas = celdaService.crearVeinte();
+
+        return ResponseEntity.status(HttpStatus.CREATED).body(creadas);
+    }
+
+    // Manejar errores de validación
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<Map<String, String>> manejarError(
+            IllegalArgumentException ex) {
+
+        Map<String, String> error = new HashMap<>();
+        error.put("mensaje", ex.getMessage());
+
+        return ResponseEntity.badRequest().body(error);
+    }
+
+    // DTO para recibir los datos desde React
+    public static class CeldaRequest {
+
+        private String codigo;
+        private String tipo;
+
+        public CeldaRequest() {
+        }
+
+        public String getCodigo() {
+            return codigo;
+        }
+
+        public void setCodigo(String codigo) {
+            this.codigo = codigo;
+        }
+
+        public String getTipo() {
+            return tipo;
+        }
+
+        public void setTipo(String tipo) {
+            this.tipo = tipo;
+        }
+    }
+}
+
+
+package co.autoscolombia.infrastructure.web;
+
+import co.autoscolombia.application.EstanciaService;
+import co.autoscolombia.application.dto.ConfirmarPagoRequest;
+import co.autoscolombia.application.dto.LiquidacionEstancia;
+import co.autoscolombia.domain.model.Celda;
+import co.autoscolombia.domain.model.Estancia;
+import co.autoscolombia.domain.model.Pago;
+
+import org.springframework.http.HttpStatus;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.List;
+import java.util.Map;
+
+@RestController
+@RequestMapping("/api/estancias")
+@CrossOrigin(origins = "http://localhost:5173")
+public class EstanciaController {
+
+    private final EstanciaService service;
+
+    public EstanciaController(EstanciaService service) {
+        this.service = service;
+    }
+
+    public static class EntradaRequest {
+
+        private Long vehiculoId;
+        private Long celdaId;
+        private Long registradoPor;
+
+        public Long getVehiculoId() {
+            return vehiculoId;
+        }
+
+        public void setVehiculoId(Long vehiculoId) {
+            this.vehiculoId = vehiculoId;
+        }
+
+        public Long getCeldaId() {
+            return celdaId;
+        }
+
+        public void setCeldaId(Long celdaId) {
+            this.celdaId = celdaId;
+        }
+
+        public Long getRegistradoPor() {
+            return registradoPor;
+        }
+
+        public void setRegistradoPor(Long registradoPor) {
+            this.registradoPor = registradoPor;
+        }
+    }
+
+    // Listar todas las estancias
+    @GetMapping
+    public List<Estancia> listar() {
+        return service.listar();
+    }
+
+    // Listar estancias activas
+    @GetMapping("/activas")
+    public List<Estancia> listarActivas() {
+        return service.listarActivas();
+    }
+
+    // Listar celdas disponibles
+    @GetMapping("/celdas-disponibles")
+    public List<Celda> listarCeldasDisponibles() {
+        return service.listarCeldasDisponibles();
+    }
+
+    // Registrar entrada de un vehículo
+    @PostMapping("/entrada")
+    @ResponseStatus(HttpStatus.CREATED)
+    public Estancia registrarEntrada(
+            @RequestBody EntradaRequest request) {
+
+        if (request == null
+                || request.getVehiculoId() == null
+                || request.getCeldaId() == null) {
+            throw new IllegalArgumentException(
+                    "Debes indicar el vehículo y la celda."
+            );
+        }
+
+        return service.registrarEntrada(
+                request.getVehiculoId(),
+                request.getCeldaId(),
+                request.getRegistradoPor()
+        );
+    }
+
+    // Calcular liquidación de una estancia
+    @GetMapping("/{id}/liquidacion")
+    public LiquidacionEstancia calcularLiquidacion(
+            @PathVariable("id") Long id) {
+
+        return service.calcularLiquidacion(id);
+    }
+
+    // Confirmar pago y registrar salida
+    @PostMapping("/{id}/pago-salida")
+    @ResponseStatus(HttpStatus.CREATED)
+    public Map<String, Object> confirmarPagoYSalida(
+            @PathVariable("id") Long id,
+            @RequestBody ConfirmarPagoRequest solicitud) {
+
+        if (solicitud == null || solicitud.metodo() == null
+                || solicitud.metodo().isBlank()) {
+            throw new IllegalArgumentException(
+                    "Debes seleccionar un método de pago."
+            );
+        }
+
+        Pago pago = service.confirmarPagoYRegistrarSalida(
+                id,
+                solicitud
+        );
+
+        return Map.of(
+                "mensaje", "Pago registrado y salida confirmada.",
+                "pagoId", pago.getId(),
+                "estanciaId", id,
+                "valor", pago.getValor(),
+                "metodo", pago.getMetodo(),
+                "estado", pago.getEstado().name(),
+                "fechaPago", pago.getFechaPago()
+        );
+    }
+
+    // Evitar salida sin pago
+    @PostMapping("/{id}/salida")
+    public Estancia registrarSalida(@PathVariable("id") Long id) {
+        return service.registrarSalida(id);
+    }
+
+    // Manejar errores de validación
+    @ExceptionHandler(IllegalArgumentException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    public Map<String, String> manejarError(
+            IllegalArgumentException ex) {
+
+        return Map.of(
+                "mensaje",
+                ex.getMessage() != null
+                        ? ex.getMessage()
+                        : "No fue posible completar la operación."
+        );
+    }
+}
+
+package co.autoscolombia.infrastructure.web;
+
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RestController;
+import java.util.Map;
+
+@RestController
+public class HealthController {
+    @GetMapping("/api/health")
+    public Map<String, String> health() { return Map.of("estado", "ok", "aplicacion", "Autos Colombia"); }
+}
+
+package co.autoscolombia.infrastructure.web;
+
+import co.autoscolombia.application.VehiculoService;
+import co.autoscolombia.domain.model.Vehiculo;
+import jakarta.validation.Valid;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.bind.annotation.*;
+import java.util.List;
+import java.util.Map;
+
+@RestController
+@RequestMapping("/api/vehiculos")
+@CrossOrigin(origins = {"http://localhost:5173"})
+public class VehiculoController {
+    private final VehiculoService service;
+    public VehiculoController(VehiculoService service) { this.service = service; }
+
+    @GetMapping public List<Vehiculo> listar() { return service.listar(); }
+
+    @PostMapping
+    @ResponseStatus(HttpStatus.CREATED)
+    public Vehiculo registrar(@Valid @RequestBody Vehiculo vehiculo) {
+        return service.registrar(vehiculo);
+    }
+
+    @ExceptionHandler(IllegalArgumentException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    public Map<String, String> manejarError(IllegalArgumentException ex) {
+        return Map.of("mensaje", ex.getMessage());
+    }
+}
+
+
+spring.application.name=autos-colombia
+server.port=8080
+
+# Configuración de la base de datos MySQL
+spring.datasource.url=jdbc:mysql://localhost:3306/autos_colombia?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
+spring.datasource.username=root
+spring.datasource.password=9843
+
+# Configuración de JPA e Hibernate
+spring.jpa.hibernate.ddl-auto=update
+spring.jpa.open-in-view=false
+spring.jpa.show-sql=false
+
+# Manejo de errores
+server.error.include-message=always
+
+
+spring.application.name=autos-colombia
+server.port=8080
+
+# Configuración de la base de datos MySQL
+spring.datasource.url=jdbc:mysql://localhost:3306/autos_colombia?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
+spring.datasource.username=root
+spring.datasource.password=9843
+
+# Configuración de JPA e Hibernate
+spring.jpa.hibernate.ddl-auto=update
+spring.jpa.open-in-view=false
+spring.jpa.show-sql=false
+
+# Manejo de errores
+server.error.include-message=always
+
+co\autoscolombia\domain\model\Pago$Estado.class
+co\autoscolombia\domain\port\VehiculoRepository.class
+co\autoscolombia\domain\model\Celda$Estado.class
+co\autoscolombia\domain\port\PagoRepository.class
+co\autoscolombia\infrastructure\persistence\SpringDataEstancia.class
+co\autoscolombia\domain\port\CeldaRepository.class
+co\autoscolombia\application\EstanciaService.class
+co\autoscolombia\domain\model\Estancia.class
+co\autoscolombia\infrastructure\persistence\SpringDataVehiculo.class
+co\autoscolombia\infrastructure\web\EstanciaController.class
+co\autoscolombia\domain\model\Vehiculo.class
+co\autoscolombia\AutosColombiaApplication.class
+co\autoscolombia\infrastructure\web\CeldaController$CeldaRequest.class
+co\autoscolombia\infrastructure\persistence\JpaVehiculoRepository.class
+co\autoscolombia\infrastructure\web\HealthController.class
+co\autoscolombia\infrastructure\persistence\SpringDataPago.class
+co\autoscolombia\domain\port\EstanciaRepository.class
+co\autoscolombia\infrastructure\web\CeldaController.class
+co\autoscolombia\application\VehiculoService.class
+co\autoscolombia\application\dto\LiquidacionEstancia.class
+co\autoscolombia\infrastructure\web\EstanciaController$EntradaRequest.class
+co\autoscolombia\domain\model\Pago.class
+co\autoscolombia\application\CeldaService.class
+co\autoscolombia\infrastructure\persistence\JpaPagoRepository.class
+co\autoscolombia\infrastructure\persistence\JpaCeldaRepository.class
+co\autoscolombia\infrastructure\persistence\SpringDataCelda.class
+co\autoscolombia\infrastructure\web\VehiculoController.class
+co\autoscolombia\infrastructure\persistence\JpaEstanciaRepository.class
+co\autoscolombia\domain\model\Celda.class
+co\autoscolombia\application\dto\ConfirmarPagoRequest.class
+
+C:\Users\aleja\Downloads\trabajo sofia\Autos_Colombia_EA1\backend\src\main\java\co\autoscolombia\application\CeldaService.java
+C:\Users\aleja\Downloads\trabajo sofia\Autos_Colombia_EA1\backend\src\main\java\co\autoscolombia\application\dto\ConfirmarPagoRequest.java
+C:\Users\aleja\Downloads\trabajo sofia\Autos_Colombia_EA1\backend\src\main\java\co\autoscolombia\application\dto\LiquidacionEstancia.java
+C:\Users\aleja\Downloads\trabajo sofia\Autos_Colombia_EA1\backend\src\main\java\co\autoscolombia\application\EstanciaService.java
+C:\Users\aleja\Downloads\trabajo sofia\Autos_Colombia_EA1\backend\src\main\java\co\autoscolombia\application\VehiculoService.java
+C:\Users\aleja\Downloads\trabajo sofia\Autos_Colombia_EA1\backend\src\main\java\co\autoscolombia\AutosColombiaApplication.java
+C:\Users\aleja\Downloads\trabajo sofia\Autos_Colombia_EA1\backend\src\main\java\co\autoscolombia\domain\model\Celda.java
+C:\Users\aleja\Downloads\trabajo sofia\Autos_Colombia_EA1\backend\src\main\java\co\autoscolombia\domain\model\Estancia.java
+C:\Users\aleja\Downloads\trabajo sofia\Autos_Colombia_EA1\backend\src\main\java\co\autoscolombia\domain\model\Pago.java
+C:\Users\aleja\Downloads\trabajo sofia\Autos_Colombia_EA1\backend\src\main\java\co\autoscolombia\domain\model\Vehiculo.java
+C:\Users\aleja\Downloads\trabajo sofia\Autos_Colombia_EA1\backend\src\main\java\co\autoscolombia\domain\port\CeldaRepository.java
+C:\Users\aleja\Downloads\trabajo sofia\Autos_Colombia_EA1\backend\src\main\java\co\autoscolombia\domain\port\EstanciaRepository.java
+C:\Users\aleja\Downloads\trabajo sofia\Autos_Colombia_EA1\backend\src\main\java\co\autoscolombia\domain\port\PagoRepository.java
+C:\Users\aleja\Downloads\trabajo sofia\Autos_Colombia_EA1\backend\src\main\java\co\autoscolombia\domain\port\VehiculoRepository.java
+C:\Users\aleja\Downloads\trabajo sofia\Autos_Colombia_EA1\backend\src\main\java\co\autoscolombia\infrastructure\persistence\JpaCeldaRepository.java
+C:\Users\aleja\Downloads\trabajo sofia\Autos_Colombia_EA1\backend\src\main\java\co\autoscolombia\infrastructure\persistence\JpaEstanciaRepository.java
+C:\Users\aleja\Downloads\trabajo sofia\Autos_Colombia_EA1\backend\src\main\java\co\autoscolombia\infrastructure\persistence\JpaPagoRepository.java
+C:\Users\aleja\Downloads\trabajo sofia\Autos_Colombia_EA1\backend\src\main\java\co\autoscolombia\infrastructure\persistence\JpaVehiculoRepository.java
+C:\Users\aleja\Downloads\trabajo sofia\Autos_Colombia_EA1\backend\src\main\java\co\autoscolombia\infrastructure\persistence\SpringDataCelda.java
+C:\Users\aleja\Downloads\trabajo sofia\Autos_Colombia_EA1\backend\src\main\java\co\autoscolombia\infrastructure\persistence\SpringDataPago.java
+C:\Users\aleja\Downloads\trabajo sofia\Autos_Colombia_EA1\backend\src\main\java\co\autoscolombia\infrastructure\web\CeldaController.java
+C:\Users\aleja\Downloads\trabajo sofia\Autos_Colombia_EA1\backend\src\main\java\co\autoscolombia\infrastructure\web\EstanciaController.java
+C:\Users\aleja\Downloads\trabajo sofia\Autos_Colombia_EA1\backend\src\main\java\co\autoscolombia\infrastructure\web\HealthController.java
+C:\Users\aleja\Downloads\trabajo sofia\Autos_Colombia_EA1\backend\src\main\java\co\autoscolombia\infrastructure\web\VehiculoController.java
