@@ -1,0 +1,213 @@
+flowchart TB
+  U[Operario / Administrador] --> UI[React + Bootstrap]
+  UI -->|HTTP JSON| API[Controladores REST Spring Boot]
+  API --> APP[Casos de uso / Servicios de aplicación]
+  APP --> DOM[Dominio: Vehículo, Estancia, Celda, Usuario, Pago, Novedad]
+  APP --> PORT[Puertos de repositorio]
+  PORT --> INF[Adaptadores Spring Data JPA]
+  INF --> DB[(MySQL)]
+  UI -. compilación dist .-> STATIC[Spring Boot sirve frontend estático]
+  STATIC -. mismo despliegue .-> API
+
+flowchart LR
+  O([Operario]) --> RV[Registrar vehículo]
+  O --> EI[Registrar entrada]
+  O --> ES[Registrar salida]
+  O --> RN[Registrar novedad]
+  A([Administrador]) --> GU[Gestionar usuarios]
+  A --> GC[Gestionar celdas]
+  A --> PG[Gestionar pagos]
+  A --> CH[Consultar historial]
+  A --> PA[Consultar panel]
+  EI --> CV[Validar vehículo]
+  EI --> AC[Asignar celda disponible]
+  ES --> LC[Liberar celda]
+
+classDiagram
+ class Usuario {+Long id +String numeroDocumento +String nombres +String telefono +String correo}
+ class Vehiculo {+Long id +String placa +String propietario +String telefono +String tipo}
+ class Celda {+Long id +String codigo +String tipo +EstadoCelda estado}
+ class Estancia {+Long id +LocalDateTime entrada +LocalDateTime salida}
+ class Novedad {+Long id +LocalDateTime fechaHora +String descripcion}
+ class Pago {+Long id +String periodo +BigDecimal valor +LocalDateTime fechaPago +String estado}
+ Usuario "1" --> "0..*" Vehiculo : registra/posee
+ Vehiculo "1" --> "0..*" Estancia : tiene historial
+ Celda "1" --> "0..*" Estancia : asignada en
+ Estancia "1" --> "0..*" Novedad : documenta
+ Usuario "1" --> "0..*" Pago : realiza
+
+flowchart TB
+ subgraph UI["infrastructure.web"]
+  C[VehiculoController / REST]
+ end
+ subgraph APP["application"]
+  S[VehiculoService / casos de uso]
+ end
+ subgraph DOMAIN["domain"]
+  M[Modelos de dominio]
+  P[Puertos / interfaces de repositorio]
+ end
+ subgraph INFRA["infrastructure.persistence"]
+  J[JpaVehiculoRepository]
+  SD[Spring Data JPA]
+ end
+ C --> S
+ S --> M
+ S --> P
+ J -. implementa .-> P
+ J --> SD
+ SD --> DB[(MySQL)]
+
+# Historias de usuario
+
+**HU-01 — Registrar vehículo**  
+Como operario, quiero registrar la placa y los datos del propietario para identificar el vehículo en futuras visitas.  
+**Criterios:** placa y propietario obligatorios; placa normalizada en mayúsculas; placa duplicada rechazada; confirmación visible al guardar.
+
+**HU-02 — Registrar entrada**  
+Como operario, quiero registrar el ingreso de un vehículo para controlar su permanencia.  
+**Criterios:** seleccionar vehículo existente; registrar fecha/hora del servidor; no admitir otra estancia abierta; asignar celda disponible; mostrar confirmación y celda asignada.
+
+**HU-03 — Registrar salida**  
+Como operario, quiero registrar la salida de un vehículo para cerrar su estancia y liberar la celda.  
+**Criterios:** buscar por placa; mostrar entrada activa; registrar hora de salida; salida posterior a entrada; liberar celda; impedir doble cierre.
+
+**HU-04 — Consultar historial**  
+Como administrador, quiero consultar los movimientos por placa y fechas para auditar la operación.  
+**Criterios:** filtro por placa/rango; mostrar entradas, salidas y celda; informar cuando no haya resultados.
+
+**HU-05 — Gestionar celdas**  
+Como administrador, quiero crear y mantener celdas para conocer su disponibilidad.  
+**Criterios:** código único; estado disponible/ocupada/mantenimiento; no asignar celdas ocupadas o en mantenimiento.
+
+**HU-06 — Registrar novedad**  
+Como operario, quiero registrar una novedad asociada a un vehículo para dejar evidencia de incidentes u observaciones.  
+**Criterios:** vehículo o estancia asociada; descripción obligatoria; fecha/hora y responsable; consulta posterior.
+
+**HU-07 — Registrar pago mensual**  
+Como administrador, quiero registrar el pago de mensualidad para mantener control de cartera.  
+**Criterios:** usuario y periodo obligatorios; valor positivo; fecha, método y estado; evitar duplicar el mismo periodo pagado.
+
+**HU-08 — Consultar panel**  
+Como administrador, quiero ver un resumen de vehículos y ocupación para conocer el estado del parqueadero.  
+**Criterios:** total de vehículos; celdas disponibles/ocupadas; estancias abiertas; movimientos recientes.
+
+**HU-09 — Gestionar usuarios**  
+Como administrador, quiero registrar y actualizar los datos de usuarios para mantener la información de contacto al día.  
+**Criterios:** datos obligatorios validados; identificación única; datos actualizados reflejados en consultas.
+
+## Priorización de Iteración 1
+Prioridad alta: HU-01, HU-02, HU-03 y HU-04.  
+Prioridad media/documentación de evolución: HU-05, HU-06, HU-07, HU-08 y HU-09.
+
+CREATE DATABASE IF NOT EXISTS autos_colombia CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+USE autos_colombia;
+
+CREATE TABLE usuarios (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  tipo_documento VARCHAR(10) NOT NULL,
+  numero_documento VARCHAR(25) NOT NULL UNIQUE,
+  nombres VARCHAR(100) NOT NULL,
+  telefono VARCHAR(30),
+  correo VARCHAR(120),
+  activo BOOLEAN NOT NULL DEFAULT TRUE,
+  creado_en TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE vehiculos (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  placa VARCHAR(10) NOT NULL UNIQUE,
+  usuario_id BIGINT,
+  propietario VARCHAR(100) NOT NULL,
+  telefono VARCHAR(30),
+  tipo VARCHAR(40),
+  creado_en TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_vehiculo_usuario FOREIGN KEY (usuario_id) REFERENCES usuarios(id)
+);
+
+CREATE TABLE celdas (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  codigo VARCHAR(15) NOT NULL UNIQUE,
+  tipo VARCHAR(30) NOT NULL,
+  estado ENUM('DISPONIBLE','OCUPADA','MANTENIMIENTO') NOT NULL DEFAULT 'DISPONIBLE'
+);
+
+CREATE TABLE estancias (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  vehiculo_id BIGINT NOT NULL,
+  celda_id BIGINT NOT NULL,
+  entrada DATETIME NOT NULL,
+  salida DATETIME NULL,
+  registrado_por BIGINT NULL,
+  CONSTRAINT fk_estancia_vehiculo FOREIGN KEY (vehiculo_id) REFERENCES vehiculos(id),
+  CONSTRAINT fk_estancia_celda FOREIGN KEY (celda_id) REFERENCES celdas(id),
+  CONSTRAINT fk_estancia_usuario FOREIGN KEY (registrado_por) REFERENCES usuarios(id),
+  INDEX ix_estancia_vehiculo_salida (vehiculo_id, salida),
+  INDEX ix_estancia_entrada (entrada)
+);
+
+CREATE TABLE novedades (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  estancia_id BIGINT NOT NULL,
+  fecha_hora DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  descripcion TEXT NOT NULL,
+  responsable_id BIGINT NULL,
+  CONSTRAINT fk_novedad_estancia FOREIGN KEY (estancia_id) REFERENCES estancias(id),
+  CONSTRAINT fk_novedad_responsable FOREIGN KEY (responsable_id) REFERENCES usuarios(id)
+);
+
+CREATE TABLE pagos (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  usuario_id BIGINT NOT NULL,
+  periodo CHAR(7) NOT NULL COMMENT 'Formato YYYY-MM',
+  valor DECIMAL(12,2) NOT NULL,
+  fecha_pago DATETIME NOT NULL,
+  metodo VARCHAR(30) NOT NULL,
+  estado ENUM('PENDIENTE','PAGADO','ANULADO') NOT NULL DEFAULT 'PENDIENTE',
+  referencia VARCHAR(80),
+  CONSTRAINT fk_pago_usuario FOREIGN KEY (usuario_id) REFERENCES usuarios(id),
+  CONSTRAINT uq_pago_usuario_periodo UNIQUE (usuario_id, periodo),
+  CONSTRAINT ck_pago_valor CHECK (valor > 0)
+);
+
+# Requerimientos — Autos Colombia
+
+## Requerimientos funcionales
+| ID | Requerimiento | Criterio de aceptación |
+|---|---|---|
+| RF-01 | Registrar vehículo y propietario | El sistema solicita placa y propietario; guarda el registro si los datos son válidos. |
+| RF-02 | Consultar vehículos | El administrador visualiza los vehículos registrados con placa, propietario, tipo y contacto. |
+| RF-03 | Registrar entrada | El operario identifica el vehículo, registra fecha/hora de entrada y asigna una celda libre. |
+| RF-04 | Registrar salida | El operario registra fecha/hora de salida y libera la celda asociada. |
+| RF-05 | Evitar entradas duplicadas | Un vehículo no puede tener dos estancias abiertas simultáneas. |
+| RF-06 | Gestionar usuarios | Crear, consultar y actualizar usuarios/propietarios con datos de contacto. |
+| RF-07 | Gestionar celdas | Crear y consultar celdas; estados: disponible, ocupada, mantenimiento. |
+| RF-08 | Asignar celda disponible | Una entrada solo puede confirmarse si existe una celda disponible compatible. |
+| RF-09 | Registrar novedades | Asociar novedad, descripción, fecha/hora y responsable a una estancia o vehículo. |
+| RF-10 | Registrar pagos | Guardar usuario, periodo, valor, fecha, método y estado del pago mensual. |
+| RF-11 | Consultar historial | Consultar entradas/salidas por placa y rango de fechas. |
+| RF-12 | Validar integridad | Rechazar placas repetidas, campos obligatorios vacíos y operaciones incompatibles con el estado actual. |
+| RF-13 | Control de acceso | Restringir las operaciones según rol de administrador u operario. Requiere incorporar autenticación antes de producción. |
+
+## Requerimientos no funcionales
+| ID | Requerimiento | Verificación propuesta |
+|---|---|---|
+| RNF-01 | Usabilidad | Formularios en español, etiquetas claras, validación y mensajes de éxito/error. |
+| RNF-02 | Rendimiento | Las consultas comunes deben responder en menos de 2 s con hasta 5.000 vehículos en ambiente de prueba. |
+| RNF-03 | Seguridad | Validación de entradas, consultas parametrizadas mediante JPA, secretos por variables de entorno y HTTPS en despliegue. |
+| RNF-04 | Integridad | Claves primarias, relaciones y restricciones de unicidad; transacciones para entrada/salida. |
+| RNF-05 | Mantenibilidad | Separación en dominio, aplicación e infraestructura; nombres claros y responsabilidades únicas. |
+| RNF-06 | Disponibilidad | Manejo de errores y endpoint de salud; respaldo periódico de la base de datos. |
+| RNF-07 | Compatibilidad | Interfaz adaptable a escritorio, tableta y móvil; navegadores modernos. |
+| RNF-08 | Trazabilidad | Registrar fechas de entrada/salida, pagos y novedades con sus responsables. |
+| RNF-09 | Portabilidad | Ejecutar con Java 21, Maven, Node.js y MySQL 8, documentando variables de configuración. |
+| RNF-10 | Privacidad | Usar datos personales solo para operar el servicio y limitar su acceso a personal autorizado. |
+
+## Reglas de negocio
+- La placa se normaliza a mayúsculas y no se puede duplicar.
+- Una celda ocupada o en mantenimiento no puede asignarse.
+- No se permite una segunda estancia abierta para el mismo vehículo.
+- La salida debe ser posterior a la entrada.
+- Una salida confirmada libera la celda en la misma transacción.
+- Un pago mensual debe asociarse a un usuario/periodo y tener valor mayor que cero.
+- Las novedades deben indicar fecha, descripción y vehículo/estancia relacionada.
